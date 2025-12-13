@@ -53,7 +53,22 @@ const client = new MongoClient(process.env.MONGODB_URI, {
 })
 async function run() {
   try {
+    const db=client.db('decorationDB')
+    const decorationCollection=db.collection('decorations')
 
+    //Post a decoration from admin
+    app.post('/decorations',async(req,res)=>{
+      const decorationData=req.body
+      console.log(decorationData);
+      const result=await decorationCollection.insertOne(decorationData)
+      res.send(result)
+    })
+
+    //get all decoration from db
+    app.get('/decorations',async (req,res)=>{
+      const result=await decorationCollection.find().toArray();
+      res.send(result)
+    })
 
     
     // Send a ping to confirm a successful connection
