@@ -82,7 +82,6 @@ async function run() {
     //save or update ueser in db
     app.post("/user", async (req, res) => {
       const userData = req.body;
-      userData.created_at = new Date().toISOString();
       userData.last_loggedIn = new Date().toISOString();
 
       const query = {
@@ -103,6 +102,13 @@ async function run() {
       const result = await userCollection.insertOne(userData);
       res.send(result);
     });
+
+    //get user role
+    app.get('/user/role/:email',async(req,res)=>{
+      const email=req.params.email
+      const result=await userCollection.findOne({email:email})
+      res.send({role: result?.role})
+    })
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
