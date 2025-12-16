@@ -56,6 +56,39 @@ async function run() {
     const db = client.db("decorationDB");
     const decorationCollection = db.collection("decorations");
     const userCollection = db.collection("users");
+    const userBooksCollection = db.collection("userBooks");
+
+    // Save booking
+    app.post("/userBooks", async (req, res) => {
+      const bookingData = req.body;
+
+      if (!bookingData?.userInfo?.userEmail || !bookingData?.decorationId) {
+        return res.status(400).send({ message: "Invalid booking data" });
+      }
+
+      const query = {
+        "userInfo.userEmail": bookingData.userInfo.userEmail,
+        decorationId: bookingData.decorationId,
+      };
+
+      const alreadyBooked = await userBooksCollection.findOne(query);
+
+      if (alreadyBooked) {
+        return res.status(409).send({
+          message: "Already booked this decoration",
+        });
+      }
+
+      bookingData.bookedAt = new Date();
+
+      const result = await userBooksCollection.insertOne(bookingData);
+
+      res.send({
+        success: true,
+        message: "Booking successful",
+        insertedId: result.insertedId,
+      });
+    });
 
     //Post a decoration from admin
     app.post("/decorations", async (req, res) => {
@@ -77,6 +110,19 @@ async function run() {
         _id: new ObjectId(id),
       });
       res.send(result);
+    });
+
+    // User get PurchaseModal - only decorators
+    app.get("/Deco_Available", async (req, res) => {
+      try {
+        const result = await userCollection
+          .find({ role: "decoretor" })
+          .toArray();
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Server Error" });
+      }
     });
 
     //save or update ueser in db
@@ -104,11 +150,10 @@ async function run() {
     });
 
     //get user role
-    app.get('/user/role/:email',async(req,res)=>{
-      const email=req.params.email
-      const result=await userCollection.findOne({email:email})
-      res.send({role: result?.role})
-    })
+    app.get("/user/role", verifyJWT, async (req, res) => {
+      const result = await userCollection.findOne({ email: req.tokenEmail });
+      res.send({ role: result?.role });
+    });
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
