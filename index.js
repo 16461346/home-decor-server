@@ -57,36 +57,178 @@ async function run() {
     const decorationCollection = db.collection("decorations");
     const userCollection = db.collection("users");
     const userBooksCollection = db.collection("userBooks");
+    const decoratorRequestCollection = db.collection("decoratorRequests");
 
-    // Save booking
-    app.post("/userBooks", async (req, res) => {
-      const bookingData = req.body;
+    //user management 
+    app.get('/userManage',verifyJWT,async(req,res)=>{
+      const result=await userCollection.find().toArray();
+      res.send(result)
+    })
 
-      if (!bookingData?.userInfo?.userEmail || !bookingData?.decorationId) {
-        return res.status(400).send({ message: "Invalid booking data" });
-      }
+    // User → Become Decorator Request
+    app.post("/decorator-requests", async (req, res) => {
+      try {
+        const { name, email, division, district, phone, role } = req.body;
 
-      const query = {
-        "userInfo.userEmail": bookingData.userInfo.userEmail,
-        decorationId: bookingData.decorationId,
-      };
+        if (!name || !email || !division || !district || !phone) {
+          return res.status(400).send({ message: "All fields are required" });
+        }
 
-      const alreadyBooked = await userBooksCollection.findOne(query);
-
-      if (alreadyBooked) {
-        return res.status(409).send({
-          message: "Already booked this decoration",
+        // Prevent duplicate request
+        const alreadyRequested = await decoratorRequestCollection.findOne({
+          email,
+          status: { $in: ["pending", "approved"] },
         });
+
+        if (alreadyRequested) {
+          return res.status(409).send({
+            success: false,
+            message: "You have already requested or are already a decorator",
+          });
+        }
+
+        const requestData = {
+          name,
+          email,
+          division,
+          district,
+          phone,
+          role,
+          status: "pending",
+          requestedAt: new Date(),
+        };
+
+        const result = await decoratorRequestCollection.insertOne(requestData);
+
+        res.send({
+          success: true,
+          message: "Decorator request submitted successfully",
+          insertedId: result.insertedId,
+        });
+      } catch (error) {
+        console.error("Decorator Request Error:", error);
+        res.status(500).send({ message: "Server error" });
       }
+    });
 
-      bookingData.bookedAt = new Date();
+    //decorator request show on admin
+    app.get("/decorator-requests", async (req, res) => {
+      const result = await decoratorRequestCollection.find().toArray();
+      res.send(result);
+    });
 
-      const result = await userBooksCollection.insertOne(bookingData);
+    app.post("/userBooks", async (req, res) => {
+      try {
+        const bookingData = req.body;
+
+        const { decorationId, bookingDate, startTime, endTime, userInfo } =
+          bookingData;
+
+        if (
+          !userInfo?.userEmail ||
+          !decorationId ||
+          !bookingDate ||
+          !startTime ||
+          !endTime
+        ) {
+          return res.status(400).send({ message: "Invalid booking data" });
+        }
+
+        // Check duplicate booking
+        const duplicateQuery = {
+          "userInfo.userEmail": userInfo.userEmail,
+          decorationId,
+          bookingDate,
+          startTime,
+          endTime,
+        };
+
+        const alreadyBooked = await userBooksCollection.findOne(duplicateQuery);
+
+        if (alreadyBooked) {
+          return res.status(409).send({
+            success: false,
+            message:
+              "You have already booked this decoration for the selected date and time",
+          });
+        }
+
+        bookingData.status = "pending";
+        bookingData.paymentStatus = "paid";
+        bookingData.assignedDecorator = null;
+        bookingData.bookedAt = new Date();
+
+        const result = await userBooksCollection.insertOne(bookingData);
+
+        res.send({
+          success: true,
+          message: "Booking successful",
+          insertedId: result.insertedId,
+        });
+      } catch (error) {
+        console.error("Booking Error:", error);
+        res.status(500).send({ message: "Server error" });
+      }
+    });
+
+    // APPROVE DECORATOR
+    app.patch("/decorator-requests/approve/:id", async (req, res) => {
+      const id = req.params.id;
+
+      // 1️⃣ Update decorator request status
+      const result = await decoratorRequestCollection.updateOne(
+        { _id: new ObjectId(id) },
+        {
+          $set: {
+            status: "approved",
+            approvedAt: new Date(),
+          },
+        }
+      );
+
+      // 2️⃣ Find request data (email)
+      const request = await decoratorRequestCollection.findOne({
+        _id: new ObjectId(id),
+      });
+
+      // 3️⃣ Update user role → decorator
+      if (request?.email) {
+        await userCollection.updateOne(
+          { email: request.email },
+          {
+            $set: {
+              role: "decorator",
+            },
+          }
+        );
+      }
 
       res.send({
         success: true,
-        message: "Booking successful",
-        insertedId: result.insertedId,
+        message: "Decorator approved successfully",
+        result,
+      });
+    });
+
+    //reject decorator
+    // REJECT DECORATOR
+    app.patch("/decorator-requests/reject/:id", async (req, res) => {
+      const id = req.params.id;
+
+      const result = await decoratorRequestCollection.updateOne(
+        { _id: new ObjectId(id) },
+        {
+          $set: {
+            status: "rejected",
+            rejectedAt: new Date(),
+          },
+        }
+      );
+
+      res.send({
+        success: true,
+        message: "Decorator request rejected",
+        result,
       });
     });
 
@@ -116,7 +258,7 @@ async function run() {
     app.get("/Deco_Available", async (req, res) => {
       try {
         const result = await userCollection
-          .find({ role: "decoretor" })
+          .find({ role: "decoretdeor" })
           .toArray();
         res.send(result);
       } catch (error) {
