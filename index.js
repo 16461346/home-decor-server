@@ -382,7 +382,7 @@ async function run() {
           creatorEmail: paymentInfo.creatorEmail,
           creatorName: paymentInfo.creatorName,
           creatorPhoto: paymentInfo.creatorPhoto,
-          image:paymentInfo.image,
+          image: paymentInfo.image,
         },
 
         success_url: `${process.env.DOMAIN_URL}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
@@ -428,7 +428,7 @@ async function run() {
             division: session.metadata.division,
             district: session.metadata.district,
             Decoration_Creator: session.metadata.Decoration_Creator,
-            Image:session.metadata.image,
+            Image: session.metadata.image,
 
             created_at: new Date(),
           };
@@ -480,6 +480,45 @@ async function run() {
       });
     });
 
+    // cancel booking by transactionId
+    app.patch(
+      "/bookings/cancel/:transactionId",
+      verifyJWT,
+      async (req, res) => {
+        const { transactionId } = req.params;
+
+        try {
+          const result = await BookingCollection.updateOne(
+            { transactionId },
+            {
+              $set: {
+                status: "cancelled",
+                cancelledAt: new Date(),
+              },
+            }
+          );
+
+          if (result.matchedCount === 0) {
+            return res.status(404).send({
+              success: false,
+              message: "Booking not found",
+            });
+          }
+
+          res.send({
+            success: true,
+            message: "Booking cancelled successfully",
+          });
+        } catch (error) {
+          res.status(500).send({
+            success: false,
+            message: "Failed to cancel booking",
+            error: error.message,
+          });
+        }
+      }
+    );
+
     //save or update ueser in db
     app.post("/user", async (req, res) => {
       const userData = req.body;
@@ -514,7 +553,9 @@ async function run() {
       try {
         const result = await BookingCollection.find({
           customer: req.tokenEmail,
-        }).toArray();
+        })
+          .sort({ created_at: -1 })
+          .toArray();
         res.send(result);
       } catch (err) {
         console.error(err);
