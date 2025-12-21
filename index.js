@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const admin = require("firebase-admin");
 const port = process.env.PORT || 3000;
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
@@ -16,11 +17,7 @@ const app = express();
 // middleware
 app.use(
   cors({
-    origin: [
-      "http://localhost:5173",
-      "http://localhost:5174",
-      "https://b12-m11-session.web.app",
-    ],
+    origin: [process.env.DOMAIN_URL],
     credentials: true,
     optionSuccessStatus: 200,
   })
@@ -77,7 +74,7 @@ async function run() {
     const db = client.db("decorationDB");
     const decorationCollection = db.collection("decorations");
     const userCollection = db.collection("users");
-    const userBooksCollection = db.collection("userBooks");
+    const BookingCollection = db.collection("userBooking");
     const decoratorRequestCollection = db.collection("decoratorRequests");
 
     app.put("/decoration/:id", async (req, res) => {
@@ -208,59 +205,59 @@ async function run() {
       res.send(result);
     });
 
-    app.post("/userBooks", async (req, res) => {
-      try {
-        const bookingData = req.body;
+    // app.post("/userBooks", async (req, res) => {
+    //   try {
+    //     const bookingData = req.body;
 
-        const { decorationId, bookingDate, startTime, endTime, userInfo } =
-          bookingData;
+    //     const { decorationId, bookingDate, startTime, endTime, userInfo } =
+    //       bookingData;
 
-        if (
-          !userInfo?.userEmail ||
-          !decorationId ||
-          !bookingDate ||
-          !startTime ||
-          !endTime
-        ) {
-          return res.status(400).send({ message: "Invalid booking data" });
-        }
+    //     if (
+    //       !userInfo?.userEmail ||
+    //       !decorationId ||
+    //       !bookingDate ||
+    //       !startTime ||
+    //       !endTime
+    //     ) {
+    //       return res.status(400).send({ message: "Invalid booking data" });
+    //     }
 
-        // Check duplicate booking
-        const duplicateQuery = {
-          "userInfo.userEmail": userInfo.userEmail,
-          decorationId,
-          bookingDate,
-          startTime,
-          endTime,
-        };
+    //     // Check duplicate booking
+    //     const duplicateQuery = {
+    //       "userInfo.userEmail": userInfo.userEmail,
+    //       decorationId,
+    //       bookingDate,
+    //       startTime,
+    //       endTime,
+    //     };
 
-        const alreadyBooked = await userBooksCollection.findOne(duplicateQuery);
+    //     const alreadyBooked = await userBooksCollection.findOne(duplicateQuery);
 
-        if (alreadyBooked) {
-          return res.status(409).send({
-            success: false,
-            message:
-              "You have already booked this decoration for the selected date and time",
-          });
-        }
+    //     if (alreadyBooked) {
+    //       return res.status(409).send({
+    //         success: false,
+    //         message:
+    //           "You have already booked this decoration for the selected date and time",
+    //       });
+    //     }
 
-        bookingData.status = "pending";
-        bookingData.paymentStatus = "paid";
-        bookingData.assignedDecorator = null;
-        bookingData.bookedAt = new Date();
+    //     bookingData.status = "pending";
+    //     bookingData.paymentStatus = "paid";
+    //     bookingData.assignedDecorator = null;
+    //     bookingData.bookedAt = new Date();
 
-        const result = await userBooksCollection.insertOne(bookingData);
+    //     const result = await userBooksCollection.insertOne(bookingData);
 
-        res.send({
-          success: true,
-          message: "Booking successful",
-          insertedId: result.insertedId,
-        });
-      } catch (error) {
-        console.error("Booking Error:", error);
-        res.status(500).send({ message: "Server error" });
-      }
-    });
+    //     res.send({
+    //       success: true,
+    //       message: "Booking successful",
+    //       insertedId: result.insertedId,
+    //     });
+    //   } catch (error) {
+    //     console.error("Booking Error:", error);
+    //     res.status(500).send({ message: "Server error" });
+    //   }
+    // });
 
     // APPROVE DECORATOR
     app.patch("/decorator-requests/approve/:id", async (req, res) => {
@@ -351,6 +348,102 @@ async function run() {
       const result = await decorationCollection.find().toArray();
       res.send(result);
     });
+
+    //Payment methode
+    app.post("/create-checkout-session", async (req, res) => {
+      const paymentInfo = req.body;
+      console.log(paymentInfo);
+      const session = await stripe.checkout.sessions.create({
+        line_items: [
+          {
+            price_data: {
+              currency: "usd",
+              product_data: {
+                name: paymentInfo?.name,
+                description: paymentInfo?.description,
+                images: [paymentInfo?.image],
+              },
+              unit_amount: paymentInfo?.price * 100,
+            },
+            quantity: 1,
+          },
+        ],
+        customer_email: paymentInfo.customer.email,
+        mode: "payment",
+        metadata: {
+          decorationId: paymentInfo.decorationId,
+          customer: paymentInfo.customer.email,
+          bookingDate: paymentInfo.bookingDate,
+          startTime: paymentInfo.startTime,
+          endTime: paymentInfo.endTime,
+          phone: paymentInfo.phone,
+          division: paymentInfo.division,
+          district: paymentInfo.district,
+          creatorEmail: paymentInfo.creatorEmail,
+          creatorName: paymentInfo.creatorName,
+          creatorPhoto: paymentInfo.creatorPhoto,
+          image:paymentInfo.image,
+        },
+
+        success_url: `${process.env.DOMAIN_URL}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${process.env.DOMAIN_URL}/service/${paymentInfo?.decorationId}`,
+      });
+      res.send({
+        url: session.url,
+      });
+    });
+
+    app.post("/payment-success", async (req, res) => {
+      const { sessionId } = req.body;
+
+      if (!sessionId) {
+        return res.status(400).send({ message: "Session ID missing" });
+      }
+      try {
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+        const decoration = await decorationCollection.findOne({
+          _id: new ObjectId(session.metadata.decorationId),
+        });
+
+        const order = await BookingCollection.findOne({
+          transactionId: session.payment_intent,
+        });
+
+        if (session.status === "complete" && decoration && !order) {
+          const orderInfo = {
+            decorationId: session.metadata.decorationId,
+            transactionId: session.payment_intent,
+            customer: session.metadata.customer,
+            status: "pending",
+            payment_status: session.payment_status,
+            name: decoration.name,
+            category: decoration.category,
+            price: session.amount_total / 100,
+
+            // User-provided info
+            bookingDate: session.metadata.bookingDate,
+            startTime: session.metadata.startTime,
+            endTime: session.metadata.endTime,
+            phone: session.metadata.phone,
+            division: session.metadata.division,
+            district: session.metadata.district,
+            Decoration_Creator: session.metadata.Decoration_Creator,
+            Image:session.metadata.image,
+
+            created_at: new Date(),
+          };
+
+          const result = await BookingCollection.insertOne(orderInfo);
+        }
+        res.send({ success: true });
+      } catch (err) {
+        console.error("Stripe retrieve error:", err);
+        res
+          .status(500)
+          .send({ message: "Stripe retrieve failed", error: err.message });
+      }
+    });
+
     //get a decoration from db
     app.get("/decorations/:id", async (req, res) => {
       const id = req.params.id;
@@ -361,29 +454,31 @@ async function run() {
     });
 
     app.get("/decorators/available", verifyJWT, async (req, res) => {
-  const { division, district, bookingDate } = req.query;
-  if (!division || !district || !bookingDate) return res.send({ available: false, decorators: [] });
+      const { division, district, bookingDate } = req.query;
+      if (!division || !district || !bookingDate)
+        return res.send({ available: false, decorators: [] });
 
-  const decorators = await userCollection
-    .find({
-      role: "decorator",
-      division,
-      district,
-    })
-    .toArray();
+      const decorators = await userCollection
+        .find({
+          role: "decorator",
+          division,
+          district,
+        })
+        .toArray();
 
-  const availableDecorators = decorators.filter((dec) => {
-    // যদি decorator এর working_date, start_time, end_time থাকে
-    if (!dec.working_date || !dec.start_time || !dec.end_time) return true;
-    return new Date(dec.working_date).toISOString().split("T")[0] === bookingDate;
-  });
+      const availableDecorators = decorators.filter((dec) => {
+        // যদি decorator এর working_date, start_time, end_time থাকে
+        if (!dec.working_date || !dec.start_time || !dec.end_time) return true;
+        return (
+          new Date(dec.working_date).toISOString().split("T")[0] === bookingDate
+        );
+      });
 
-  res.send({
-    available: availableDecorators.length > 0,
-    decorators: availableDecorators,
-  });
-});
-
+      res.send({
+        available: availableDecorators.length > 0,
+        decorators: availableDecorators,
+      });
+    });
 
     //save or update ueser in db
     app.post("/user", async (req, res) => {
@@ -413,6 +508,18 @@ async function run() {
     app.get("/user/role", verifyJWT, async (req, res) => {
       const result = await userCollection.findOne({ email: req.tokenEmail });
       res.send({ role: result?.role });
+    });
+
+    app.get("/my-bookins", verifyJWT, async (req, res) => {
+      try {
+        const result = await BookingCollection.find({
+          customer: req.tokenEmail,
+        }).toArray();
+        res.send(result);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Failed to fetch bookings" });
+      }
     });
 
     // Send a ping to confirm a successful connection
