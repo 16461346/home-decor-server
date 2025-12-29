@@ -40,27 +40,6 @@ const verifyJWT = async (req, res, next) => {
   }
 };
 
-const verifyAdmin = async (req, res, next) => {
-  try {
-    const email = req.decoded?.email;
-
-    if (!email) {
-      return res.status(401).send({ message: "Unauthorized access" });
-    }
-
-    const user = await userCollection.findOne({ email });
-
-    if (!user || user.role !== "admin") {
-      return res.status(403).send({ message: "Forbidden: Admin only" });
-    }
-
-    next();
-  } catch (error) {
-    console.error("Verify Admin Error:", error);
-    res.status(500).send({ message: "Server error" });
-  }
-};
-
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(process.env.MONGODB_URI, {
   serverApi: {
@@ -76,6 +55,30 @@ async function run() {
     const userCollection = db.collection("users");
     const BookingCollection = db.collection("userBooking");
     const decoratorRequestCollection = db.collection("decoratorRequests");
+
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.tokenEmail; // Correct
+      const user = await userCollection.findOne({ email });
+
+      if (!user || user.role !== "admin") {
+        return res.status(403).send({ message: "Forbidden access" });
+      }
+
+      next();
+    };
+
+    //Booking Collection get
+    app.get("/bookings", verifyJWT, verifyAdmin, async (req, res) => {
+      try {
+        const result = await BookingCollection.find({
+          status: "pending",
+        }).toArray();
+        res.send(result);
+      } catch (error) {
+        console.error("Decorations Error:", error);
+        res.status(500).send({ message: "Server error", error });
+      }
+    });
 
     app.put("/decoration/:id", async (req, res) => {
       const { id } = req.params;
@@ -135,23 +138,154 @@ async function run() {
       }
     });
 
-    //update user
-    app.patch("/users/update-role", verifyJWT, async (req, res) => {
-      const { email, role } = req.body;
+    app.patch(
+      "/users/update-role",
+      verifyJWT,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const { email, role } = req.body;
 
-      const result = await userCollection.updateOne(
-        { email: email },
-        { $set: { role: role } }
-      );
+          if (!email || !role) {
+            return res
+              .status(400)
+              .send({ message: "Email and role are required" });
+          }
 
-      res.send(result);
-    });
+          let updateDoc = { $set: { role } };
 
-    //user management
+          if (role === "decorator") {
+            // decorator হলে work_Status add/set করো
+            updateDoc.$set.work_Status = "available";
+          } else {
+            // decorator না হলে work_Status remove করো
+            updateDoc.$unset = { work_Status: "" };
+          }
+
+          const result = await userCollection.updateOne({ email }, updateDoc);
+
+          // response handle
+          if (result.acknowledged && result.matchedCount === 0) {
+            return res.send({ success: false, message: "User not found" });
+          }
+
+          if (result.matchedCount > 0 && result.modifiedCount === 0) {
+            return res.send({
+              success: true,
+              message: "User role already up-to-date",
+            });
+          }
+
+          res.send({
+            success: true,
+            message: "User role updated successfully",
+          });
+        } catch (error) {
+          console.error(error);
+          res
+            .status(500)
+            .send({ success: false, message: "Server error", error });
+        }
+      }
+    );
+
+    // Decorations Pending Task → Assigned to decorator
+    app.get("/assigned-task", verifyJWT, async (req, res) => {
+  try {
+    const { decoratorEmail, status } = req.query;
+
+    const query = {
+      "assignedDecorator.email": decoratorEmail,
+      status: status, // "assigned"
+    };
+
+    const tasks = await BookingCollection.find(query).toArray();
+    res.send(tasks);
+  } catch (error) {
+    res.status(500).send({ message: "Server error" });
+  }
+});
+
+
+    // Update booking/decorator status
+    app.patch("/bookings/:id/status", verifyJWT, async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+
+  const result = await BookingCollection.updateOne(
+    { _id: new ObjectId(id) },
+    { $set: { status, updatedAt: new Date() } }
+  );
+
+  res.send({ success: result.modifiedCount > 0 });
+});
+
+
+    // user management
     app.get("/userManage", verifyJWT, async (req, res) => {
       const result = await userCollection.find().toArray();
       res.send(result);
     });
+
+    // ASSIGN DECORATOR TO BOOKING
+    app.patch(
+      "/bookings/assign-decorator",
+      verifyJWT,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const { bookingId, decoratorId } = req.body;
+
+          if (!bookingId || !decoratorId) {
+            return res.status(400).send({ message: "Missing data" });
+          }
+
+          // 1️⃣ Find decorator
+          const decorator = await userCollection.findOne({
+            _id: new ObjectId(decoratorId),
+          });
+
+          if (!decorator) {
+            return res.status(404).send({ message: "Decorator not found" });
+          }
+
+          // 2️⃣ Update booking
+          await BookingCollection.updateOne(
+            { _id: new ObjectId(bookingId) },
+            {
+              $set: {
+                assignedDecorator: {
+                  id: decorator._id,
+                  name: decorator.name,
+                  email: decorator.email,
+                  phone: decorator.phone,
+                },
+                status: "Decorator-assigned",
+                assignedAt: new Date(),
+              },
+            }
+          );
+
+          // 3️⃣ Update decorator work status
+          await userCollection.updateOne(
+            { _id: new ObjectId(decoratorId) },
+            {
+              $set: {
+                work_Status: "busy",
+              },
+            }
+          );
+
+          res.send({
+            success: true,
+            message: "Decorator assigned successfully",
+          });
+        } catch (error) {
+          console.error("Assign Decorator Error:", error);
+          res.status(500).send({ message: "Server error" });
+        }
+      }
+    );
 
     // User → Become Decorator Request
     app.post("/decorator-requests", async (req, res) => {
@@ -205,60 +339,6 @@ async function run() {
       res.send(result);
     });
 
-    // app.post("/userBooks", async (req, res) => {
-    //   try {
-    //     const bookingData = req.body;
-
-    //     const { decorationId, bookingDate, startTime, endTime, userInfo } =
-    //       bookingData;
-
-    //     if (
-    //       !userInfo?.userEmail ||
-    //       !decorationId ||
-    //       !bookingDate ||
-    //       !startTime ||
-    //       !endTime
-    //     ) {
-    //       return res.status(400).send({ message: "Invalid booking data" });
-    //     }
-
-    //     // Check duplicate booking
-    //     const duplicateQuery = {
-    //       "userInfo.userEmail": userInfo.userEmail,
-    //       decorationId,
-    //       bookingDate,
-    //       startTime,
-    //       endTime,
-    //     };
-
-    //     const alreadyBooked = await userBooksCollection.findOne(duplicateQuery);
-
-    //     if (alreadyBooked) {
-    //       return res.status(409).send({
-    //         success: false,
-    //         message:
-    //           "You have already booked this decoration for the selected date and time",
-    //       });
-    //     }
-
-    //     bookingData.status = "pending";
-    //     bookingData.paymentStatus = "paid";
-    //     bookingData.assignedDecorator = null;
-    //     bookingData.bookedAt = new Date();
-
-    //     const result = await userBooksCollection.insertOne(bookingData);
-
-    //     res.send({
-    //       success: true,
-    //       message: "Booking successful",
-    //       insertedId: result.insertedId,
-    //     });
-    //   } catch (error) {
-    //     console.error("Booking Error:", error);
-    //     res.status(500).send({ message: "Server error" });
-    //   }
-    // });
-
     // APPROVE DECORATOR
     app.patch("/decorator-requests/approve/:id", async (req, res) => {
       try {
@@ -279,6 +359,7 @@ async function run() {
           {
             $set: {
               status: "approved",
+              work_Status: "available",
               approvedAt: new Date(),
             },
           }
@@ -289,6 +370,7 @@ async function run() {
           { email: request.email },
           {
             $set: {
+              work_Status: "available",
               role: "decorator",
               phone: request.phone,
               division: request.division,
@@ -342,7 +424,6 @@ async function run() {
       const result = await decorationCollection.insertOne(decorationData);
       res.send(result);
     });
-
     //get all decoration from db
     app.get("/decorations", async (req, res) => {
       const result = await decorationCollection.find().toArray();
@@ -427,9 +508,7 @@ async function run() {
             phone: session.metadata.phone,
             division: session.metadata.division,
             district: session.metadata.district,
-            Decoration_Creator: session.metadata.Decoration_Creator,
             Image: session.metadata.image,
-
             created_at: new Date(),
           };
 
@@ -562,6 +641,25 @@ async function run() {
         res.status(500).send({ message: "Failed to fetch bookings" });
       }
     });
+ 
+    app.get("/manage-booking", verifyJWT, async (req, res) => {
+  try {
+    const decoratorEmail = req.tokenEmail; // লগইন করা ডেকোরেটরের email
+
+    const result = await BookingCollection.find({
+      "assignedDecorator.email": decoratorEmail, // শুধু যাদের assignedDecorator.email মিলছে
+    })
+      .sort({ created_at: -1 })
+      .toArray();
+
+    res.send(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ message: "Failed to fetch decorator bookings" });
+  }
+});
+
+
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
