@@ -191,35 +191,33 @@ async function run() {
 
     // Decorations Pending Task → Assigned to decorator
     app.get("/assigned-task", verifyJWT, async (req, res) => {
-  try {
-    const { decoratorEmail, status } = req.query;
+      try {
+        const { decoratorEmail, status } = req.query;
 
-    const query = {
-      "assignedDecorator.email": decoratorEmail,
-      status: status, // "assigned"
-    };
+        const query = {
+          "assignedDecorator.email": decoratorEmail,
+          status: status, // "assigned"
+        };
 
-    const tasks = await BookingCollection.find(query).toArray();
-    res.send(tasks);
-  } catch (error) {
-    res.status(500).send({ message: "Server error" });
-  }
-});
-
+        const tasks = await BookingCollection.find(query).toArray();
+        res.send(tasks);
+      } catch (error) {
+        res.status(500).send({ message: "Server error" });
+      }
+    });
 
     // Update booking/decorator status
     app.patch("/bookings/:id/status", verifyJWT, async (req, res) => {
-  const { id } = req.params;
-  const { status } = req.body;
+      const { id } = req.params;
+      const { status } = req.body;
 
-  const result = await BookingCollection.updateOne(
-    { _id: new ObjectId(id) },
-    { $set: { status, updatedAt: new Date() } }
-  );
+      const result = await BookingCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status, updatedAt: new Date() } }
+      );
 
-  res.send({ success: result.modifiedCount > 0 });
-});
-
+      res.send({ success: result.modifiedCount > 0 });
+    });
 
     // user management
     app.get("/userManage", verifyJWT, async (req, res) => {
@@ -340,80 +338,107 @@ async function run() {
     });
 
     // APPROVE DECORATOR
-    app.patch("/decorator-requests/approve/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
+    app.patch(
+      "/decorator-requests/approve/:id",
+      verifyJWT,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const id = req.params.id;
 
-        // 1️⃣ Find request data FIRST
-        const request = await decoratorRequestCollection.findOne({
-          _id: new ObjectId(id),
-        });
+          // 1️⃣ Request খুঁজে বের করো
+          const request = await decoratorRequestCollection.findOne({
+            _id: new ObjectId(id),
+          });
 
-        if (!request) {
-          return res.status(404).send({ message: "Request not found" });
+          if (!request) {
+            return res.status(404).send({ message: "Request not found" });
+          }
+
+          // 2️⃣ User collection update (make decorator)
+          await userCollection.updateOne(
+            { email: request.email },
+            {
+              $set: {
+                role: "decorator",
+                work_Status: "available",
+                phone: request.phone,
+                division: request.division,
+                district: request.district,
+                updatedAt: new Date(),
+              },
+            }
+          );
+
+          // 3️⃣ Request collection-এ শুধু status update করো, delete না
+          const result = await decoratorRequestCollection.updateOne(
+            { _id: new ObjectId(id) },
+            {
+              $set: {
+                status: "approved",
+                approvedAt: new Date(),
+              },
+            }
+          );
+
+          res.send({
+            success: true,
+            message: "Decorator approved successfully, request retained",
+            request: await decoratorRequestCollection.findOne({
+              _id: new ObjectId(id),
+            }),
+          });
+        } catch (error) {
+          console.error("Approve Decorator Error:", error);
+          res.status(500).send({ message: "Server error" });
         }
-
-        // 2️⃣ Update decorator request status
-        await decoratorRequestCollection.updateOne(
-          { _id: new ObjectId(id) },
-          {
-            $set: {
-              status: "approved",
-              work_Status: "available",
-              approvedAt: new Date(),
-            },
-          }
-        );
-
-        // 3️⃣ Update user full data
-        const updateResult = await userCollection.updateOne(
-          { email: request.email },
-          {
-            $set: {
-              work_Status: "available",
-              role: "decorator",
-              phone: request.phone,
-              division: request.division,
-              district: request.district,
-              updatedAt: new Date(),
-            },
-          }
-        );
-
-        res.send({
-          success: true,
-          message: "Decorator approved & user updated successfully",
-          updateResult,
-        });
-      } catch (error) {
-        console.error("Approve Decorator Error:", error);
-        res.status(500).send({ message: "Server error" });
       }
-    });
+    );
 
-    // REJECT DECORATOR
     app.patch(
       "/decorator-requests/reject/:id",
       verifyJWT,
       verifyAdmin,
       async (req, res) => {
-        const id = req.params.id;
+        try {
+          const id = req.params.id;
 
-        const result = await decoratorRequestCollection.updateOne(
-          { _id: new ObjectId(id) },
-          {
-            $set: {
-              status: "rejected",
-              rejectedAt: new Date(),
-            },
+          // শুধু status update করো, কোন ডাটা unset বা delete হবে না
+          const result = await decoratorRequestCollection.updateOne(
+            { _id: new ObjectId(id) },
+            {
+              $set: {
+                status: "rejected",
+                rejectedAt: new Date(),
+              },
+            }
+          );
+
+          if (result.matchedCount === 0) {
+            return res.status(404).send({
+              success: false,
+              message: "Request not found",
+            });
           }
-        );
 
-        res.send({
-          success: true,
-          message: "Decorator request rejected",
-          result,
-        });
+          // update হওয়া document fetch করো
+          const updatedRequest = await decoratorRequestCollection.findOne({
+            _id: new ObjectId(id),
+          });
+
+          res.send({
+            success: true,
+            message: "Request rejected successfully, data retained",
+            request: updatedRequest,
+          });
+        } catch (error) {
+          console.error("Reject Decorator Error:", error);
+          res.status(500).send({
+            success: false,
+            message: "Server error",
+            error: error.message,
+          });
+        }
       }
     );
 
@@ -641,25 +666,23 @@ async function run() {
         res.status(500).send({ message: "Failed to fetch bookings" });
       }
     });
- 
+
     app.get("/manage-booking", verifyJWT, async (req, res) => {
-  try {
-    const decoratorEmail = req.tokenEmail; // লগইন করা ডেকোরেটরের email
+      try {
+        const decoratorEmail = req.tokenEmail; // লগইন করা ডেকোরেটরের email
 
-    const result = await BookingCollection.find({
-      "assignedDecorator.email": decoratorEmail, // শুধু যাদের assignedDecorator.email মিলছে
-    })
-      .sort({ created_at: -1 })
-      .toArray();
+        const result = await BookingCollection.find({
+          "assignedDecorator.email": decoratorEmail, // শুধু যাদের assignedDecorator.email মিলছে
+        })
+          .sort({ created_at: -1 })
+          .toArray();
 
-    res.send(result);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ message: "Failed to fetch decorator bookings" });
-  }
-});
-
-
+        res.send(result);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Failed to fetch decorator bookings" });
+      }
+    });
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
